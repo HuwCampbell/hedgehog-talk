@@ -1,8 +1,8 @@
 module Report where
 
 import Control.Monad
+import Data.Foldable (traverse_)
 import qualified System.Random as Random
-
 
 newtype Gen a =
   Gen {
@@ -60,6 +60,14 @@ data Result
 failWith :: String -> Result
 failWith r = Failure r []
 
+printResult :: Result -> IO ()
+printResult Success = putStrLn "Success"
+printResult (Failure r xx) = do
+  putStrLn "Failure"
+  putStrLn ("  " ++ r)
+  putStrLn "inputs"
+  traverse_ putStrLn xx
+
 
 addInput :: String -> Result -> Result
 addInput input (Failure r inputs) =
@@ -71,6 +79,12 @@ newtype Property =
   Property {
     runProperty :: Gen (IO Result)
   }
+
+success :: Property
+success =
+  Property $
+    pure . pure $
+      Success
 
 mapResult :: (Result -> Result) -> Property -> Property
 mapResult f prop =
@@ -85,6 +99,9 @@ instance Testable Bool where
       result = if b then Success else failWith "falsifiable"
     in
       Property . pure . pure $ result
+
+instance Testable Property where
+  property = id
 
 instance (Arbitrary a, Show a, Testable prop) => Testable (a -> prop) where
   property f =
