@@ -5,10 +5,9 @@
 module Test.CircularBuffer.Hedgehog where
 
 import           Control.Monad.IO.Class
-import           Foreign.C.Types (CSize, CInt, CUChar)
+import           Foreign.C.Types (CSize, CUChar)
 
 import           Hedgehog
-import           Hedgehog.Main (defaultMain)
 import qualified Hedgehog.Gen as Gen
 import qualified Hedgehog.Range as Range
 
@@ -101,16 +100,16 @@ data Get (v :: * -> *) =
   deriving (Eq, Show)
 
 instance HTraversable Get where
-  htraverse f (Get buffer) =
+  htraverse f (Get buf) =
     Get
-      <$> htraverse f buffer
+      <$> htraverse f buf
 
 get :: (MonadGen n, MonadIO m) => Command n m State
 get =
   let
     gen (State _ Nothing _) = Nothing
-    gen (State _ (Just buffer) _) =
-      Just $ pure (Get buffer)
+    gen (State _ (Just buf) _) =
+      Just $ pure (Get buf)
 
     execute (Get c) = do
       liftIO (Circular.get (concrete c))
@@ -138,7 +137,7 @@ prop_registry_sequential =
   withTests 1000 . property $ do
     actions <- forAll $
       Gen.sequential
-        (Range.linear 1 100)
+        (Range.linear 1 30)
         initialState
         [create, put, get]
 

@@ -8,10 +8,7 @@
 module Test.CircularBuffer.Report where
 
 import           Control.Monad.IO.Class
-import           Foreign.C.Types (CSize, CInt, CUChar)
-
-import           Hedgehog (Group (..), checkSequential)
-import           Hedgehog.Main (defaultMain)
+import           Foreign.C.Types (CSize, CUChar)
 
 import           StateMachine
 import           Report
@@ -50,7 +47,8 @@ instance HTraversable Create where
   htraverse _ (Create i) =
     pure (Create i)
 
-create :: Command IO State
+
+create :: Command State
 create =
   let
     gen (State _ Nothing _) =
@@ -62,10 +60,9 @@ create =
       liftIO (Circular.create i)
 
    in
-    Command gen execute (
-      \_ (Create i) o ->
-        State i (Just o) []
-    ) (\_ _ _ _ -> success)
+    Command gen execute
+      (\_ (Create i) o -> State i (Just o) [])
+      (\_ _ _ _ -> return Success)
 
 
 --- Put ---
@@ -74,7 +71,7 @@ create =
 data Put (v :: * -> *) =
   Put (Var CircularBuffer v) CUChar
 
-deriving instance Show (Var CircularBuffer v) => Show (Put v)
+deriving instance Show (v CircularBuffer) => Show (Put v)
 
 instance HFunctor Put where
   hmap f (Put buf val) =
@@ -86,7 +83,8 @@ instance HTraversable Put where
       <$> htraverse f buf
       <*> pure val
 
-put ::  Command IO State
+
+put ::  Command State
 put =
   let
     gen (State _ Nothing _) = Nothing
@@ -98,12 +96,9 @@ put =
       liftIO (Circular.put (concrete c) i)
 
    in
-    Command gen execute (
-      \s (Put _ v) _ ->
-        s {
-          contents = take (fromIntegral (capacity s)) (v : contents s)
-        }
-    ) (\_ _ _ _ -> success)
+    Command gen execute
+      (\s (Put _ v) _ -> s { contents = take (fromIntegral (capacity s)) (v : contents s) })
+      (\_ _ _ _ -> return Success)
 
 
 --- Get ---
@@ -112,24 +107,24 @@ put =
 data Get (v :: * -> *) =
   Get (Var CircularBuffer v)
 
-deriving instance Show (Var CircularBuffer v) => Show (Get v)
+deriving instance Show (v CircularBuffer) => Show (Get v)
 
 
 instance HFunctor Get where
-  hmap f (Get buffer) =
-    Get (hmap f buffer)
+  hmap f (Get buf) =
+    Get (hmap f buf)
 
 instance HTraversable Get where
-  htraverse f (Get buffer) =
+  htraverse f (Get buf) =
     Get
-      <$> htraverse f buffer
+      <$> htraverse f buf
 
-get :: Command IO State
+get :: Command State
 get =
   let
     gen (State _ Nothing _) = Nothing
-    gen (State _ (Just buffer) _) =
-      Just $ pure (Get buffer)
+    gen (State _ (Just buf) _) =
+      Just $ pure (Get buf)
 
     execute (Get c) = do
       liftIO (Circular.get (concrete c))
@@ -138,12 +133,14 @@ get =
     safeInit x = take (length x - 1) x
 
    in
-    Command gen execute (
-      \s _ _ ->
-        s {
-          contents = safeInit (contents s)
-        }
-    ) (\s _ _ o -> property (safeLast (contents s) == o ))
+    Command gen execute
+      (\s _ _ -> s { contents = safeInit (contents s) })
+      (\s _ _ o -> return $
+        if safeLast (contents s) == o then
+          Success
+        else
+          failWith (show (safeLast (contents s)) ++ " /= " ++ show o)
+      )
 
 
 --- Tests ---
@@ -151,11 +148,12 @@ get =
 
 prop_registry_sequential :: Property
 prop_registry_sequential =
-    forAll (generateActions initialState [create, put, get]) $
-      executeActions initialState
+  forAll (generateActions initialState [create, put, get]) $
+    executeActions initialState
 
 
 tests :: IO Bool
-tests =
-  check prop_registry_sequential >>= \res ->
-    printResult res >> return (res == Success)
+tests = do
+  res <- check prop_registry_sequential
+  printResult res
+  return (res == Success)

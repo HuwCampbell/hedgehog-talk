@@ -1,7 +1,7 @@
 {-# Language KindSignatures #-}
 {-# Language RankNTypes #-}
 {-# Language FlexibleContexts #-}
-{-# Language GADTs #-}
+{-# Language ExistentialQuantification #-}
 
 module StateMachine where
 
@@ -9,8 +9,8 @@ import Report
 import Rose
 
 import Control.Monad (foldM)
+import Control.Monad.Trans.Class
 import Control.Monad.Trans.State
-import Control.Monad.IO.Class
 
 import Data.Functor.Const
 import Data.Functor.Identity
@@ -25,15 +25,35 @@ import GHC.Types (Any)
 
 {-
 
-State machine testing is the generation of test programs,
+Last week we talked a lot about Hedgehog and Quickcheck,
+implementing small versions of both of them, and taking
+a hard look at how they work internally.
+
+Today we're going to talk about State Machine Testing,
+which we only really got a small peek at.
+
+So if I were to try and contrast the difference between
+normally property based testing, it would be this:
+
+> Property based testing is the random generation of inputs
+  to functions under test;
+
+> State machine testing is the random generation of programs
+  to test.
+
+
+So state machine testing is the generation of test programs,
 including function inputs, outputs, and assertions...
+
 
 Last week we saw a circular buffer example, and we were
 modelling the creation of a buffer, adding items to it,
 retrieving items from it, and ensuring that those items
 were what we were expecting.
 
-por exemplo:
+
+If one was testing this by hand, they might do something
+like this:
 
 
 > test :: TestT IO ()
@@ -70,10 +90,12 @@ Which is quite different to:
 Obviously, in order to generate the correct assertion
 at the end, we need to be keeping track of what we think
 the should be holding; in other words, we need to model
-the state of the program.
+the state of the program. The programmer in this case
+has used their mental model, but we want to do this
+more rigorously.
 
 
-This sounds difficult, looking at the last action,
+This sounds difficult, just looking at the last action,
 which includes a test:
 
 
@@ -100,6 +122,7 @@ values of a type, but rather the way that they are held.
 
 
 Who's heard of Higher Kinded data types?
+
 
 A higher kinded data type is one which is parameterised
 by a higher kind (usually a Functor).
@@ -129,7 +152,7 @@ some values of the type are only available at a certain phase
 of the program.
 
 
-Inside the CIJ codebase for example, there are data types prefixed
+Inside the mneme codebase for example, there are data types prefixed
 with "raw", which are almost the same type, but with everything
 wrapped in an Option.
 
@@ -150,21 +173,16 @@ class HFunctor g where
 
 {-
 
-As opposed to the more standard Functor and MFunctor
+Compare to two other things named Functor: the standard Functor and the MFunctor
 
--}
-
-
-class Functor f where
-  map :: (a -> b) -> f a -> f b
-
-class MFunctor g where
-  hoist :: (forall a. m a -> n a) -> g m a -> g n a
+> class Functor f where
+>   map :: (a -> b) -> f a -> f b
+>
+> class MFunctor g where
+>   hoist :: (forall a. m a -> n a) -> g m a -> g n a
 
 
-{-
-
-Which operate on standard Functor and Monad Transformers
+Which operate on singly kinded data types and monad transformers
 respectively.
 
 An implementation of HFunctor is usually trivial to write.
@@ -178,6 +196,10 @@ instance HFunctor HKPerson where
 
 toUnknown' :: HFunctor h => h Identity -> h Maybe
 toUnknown' = hmap (Just . runIdentity)
+
+
+toEmptyUnknown :: HFunctor h => h x -> h Maybe
+toEmptyUnknown = hmap (const Nothing)
 
 
 forget :: HFunctor h => h (Either a) -> h Maybe
@@ -205,7 +227,7 @@ class HFunctorMaybe g where
 
 {-
 
-But of course this can be generalised for any applicative
+This can be generalised for any applicative
 
 -}
 
@@ -277,18 +299,20 @@ during generation becomes
 >   Var 5 = get (Var 1)
 >   Var 5 === Just 5
 
+
 And at execution time, we substitute out the
 integer representations for actual values.
+
 
 -}
 
 type Name = Int
 
--- | data Const a b = Const a
-data Symbolic a = Symbolic Name
+-- | newtype Const a b = Const a
+newtype Symbolic a = Symbolic Name
   deriving Show
 
--- | data Identity a = Identity a
+-- | newtype Identity a = Identity a
 newtype Concrete a = Concrete a
 
 
@@ -296,8 +320,19 @@ concrete :: Var a Concrete -> a
 concrete (Var (Concrete a)) = a
 
 
-data Command m state =
-  forall input output. (HFunctor input, Show (input Symbolic), Show (Symbolic output)) =>
+{-
+
+Our main Command type, which we will parameterise by the user's defined state type.
+
+The input and output are existentially quantified, so they don't appear in the
+parameterised types of Command, and we can use any types with the Command itself.
+
+This input type must be an HFunctor (or HTraversable in the case of Hedgehog proper).
+
+-}
+
+data Command state =
+  forall input output. (HFunctor input, Show (input Symbolic)) =>
   Command {
     -- | A generator which provides random arguments for a command. If the
     --   command cannot be executed in the current state, it should return
@@ -307,7 +342,7 @@ data Command m state =
 
     -- | Executes a command using the arguments generated by 'commandGen'.
     , commandExecute ::
-        input Concrete -> m output
+        input Concrete -> IO output
 
     -- | Update the state during generation or execution.
     , commandUpdate ::
@@ -315,21 +350,24 @@ data Command m state =
 
     -- | What conditions must hold once the command has executed for real.
     , commandEnsure ::
-        state Concrete -> state Concrete -> input Concrete -> output -> Property
+        state Concrete -> state Concrete -> input Concrete -> output -> IO Result
 
     }
 
 
-data Intermediate m state =
-  forall input output. (HFunctor input, Show (input Symbolic), Show (Symbolic output)) =>
+-- | Type mirroring Command but with concrete generator.
+--
+--   Only used during Action generation.
+data Intermediate state =
+  forall input output. (HFunctor input, Show (input Symbolic)) =>
   Intermediate {
-    -- | A generator which provides random arguments for a command.
+    -- | A generator which provides random arguments for an action.
       intermediateGen ::
         Gen (input Symbolic)
 
     -- | Executes a command using the arguments generated by 'commandGen'.
     , intermediateExecute ::
-        input Concrete -> m output
+        input Concrete -> IO output
 
     -- | Update the state during generation or execution.
     , intermediateUpdate ::
@@ -337,15 +375,15 @@ data Intermediate m state =
 
     -- | What conditions must hold once the command has executed for real.
     , intermediateEnsure ::
-        state Concrete -> state Concrete -> input Concrete -> output -> Property
+        state Concrete -> state Concrete -> input Concrete -> output -> IO Result
 
     }
 
 -- | An instantiation of a 'Command' which can be executed, and its effect
 --   evaluated.
 --
-data Action m state =
-  forall input output. (HFunctor input, Show (input Symbolic), Show (Symbolic output)) =>
+data Action state =
+  forall input output. (HFunctor input, Show (input Symbolic)) =>
   Action {
       actionInput ::
         input Symbolic
@@ -354,19 +392,19 @@ data Action m state =
         Symbolic output
 
     , actionExecute ::
-        input Concrete -> m output
+        input Concrete -> IO output
 
     , actionUpdate ::
         forall v. state v -> input v -> Var output v -> state v
 
     , actionEnsure ::
-        state Concrete -> state Concrete -> input Concrete -> output -> Property
+        state Concrete -> state Concrete -> input Concrete -> output -> IO Result
     }
 
 
-instance Show (Action m state) where
-  show (Action input output _ _ _) =
-    show output ++ " <- " ++ show input
+instance Show (Action state) where
+  show (Action input (Symbolic output) _ _ _) =
+    "Var " ++ show output ++ " <- " ++ show input
 
   showList actions s =
     unlines (fmap show actions) ++ s
@@ -374,7 +412,11 @@ instance Show (Action m state) where
 
 
 -- | Generate a single action from a list of commands
-generateAction :: Name -> state Symbolic -> [Command m state] -> Gen (Action m state)
+--
+--   We need to pick which commands are applicable from the current state,
+--   choose one, run its generator, and instantiate the Action.
+--
+generateAction :: Name -> state Symbolic -> [Command state] -> Gen (Action state)
 generateAction name state commands = do
   let
     applicable =
@@ -395,8 +437,9 @@ generateAction name state commands = do
 
 -- | Generate a random length set of actions
 --
---   We're not doing any shrinking here.
-generateActions :: state Symbolic -> [Command m state] -> Gen [Action m state]
+--   We need to keep track of and update the user defined state as
+--   we go.
+generateActions :: state Symbolic -> [Command state] -> Gen [Action state]
 generateActions initialState commands = do
   number       <- integral 1 10
   (actions, _) <- foldM go ([], initialState) [1 .. number]
@@ -414,7 +457,36 @@ generateActions initialState commands = do
 
 
 
+{-
+
+We need a way to execute our actions, remember the constructor for Action contains
+the following
+
+>      actionInput ::
+>        input Symbolic
+>
+>      actionExecute ::
+>        input Concrete -> m output
+
+so to execute, we somehow need to turn an `input Symbolic` into an `input Concrete`.
+
+But where can we draw the concrete values from?
+
+-}
+
 type Environment = Map Name Any
+
+{-
+
+Hedgehog proper uses GHC's Data.Dynamic type, which adds some type safety. We're just
+going to go yolo it.
+
+
+Reifying a Symbolic to a Concrete means looking it up in the map, and coercing it to
+the appropriate type.
+
+
+-}
 
 
 reify :: Environment -> Symbolic a -> Concrete a
@@ -423,55 +495,85 @@ reify env (Symbolic n) =
     env Map.! n
 
 
+{-
+
+We need a function to add more items into the environment.
+
+-}
+
 updateEnvironment :: Environment -> Symbolic a -> a -> Environment
 updateEnvironment env (Symbolic n) concrete =
   Map.insert n (unsafeCoerce concrete) env
 
+{-
 
--- | Execute an action
---
---   We need to be inside a Gen as we are going to be running a property
---   test to ensure the state is good.
-executeAction :: Action IO state -> Gen (StateT (state Concrete, Environment) IO Result)
-executeAction (Action input output execute update ensure) =
-  Gen $ \seed -> do
-    (state, env) <- get
+You might notice that I've put in 'a' while drawing out 'Concrete a';
+fortunately as I've made sure Concrete is a newtype their runtime
+representations are the same and this will work.
 
-    let
-      input' =
-        hmap (reify env) input
-
-    output' <- liftIO (execute input')
-
-    let
-      newEnv =
-        updateEnvironment env output output'
-
-      newState =
-        update state input' (Var (Concrete output'))
-
-    put (newState, newEnv)
-
-    liftIO $ runGen (runProperty (ensure state newState input' output')) seed
+-}
 
 
--- Execute all the actions given an initial state.
---
--- Returning the full Property
-executeActions :: state Concrete -> [Action IO state] -> Property
+
+{-
+
+Execute a single action
+
+We're going to be ensuring a result due to the
+
+
+>  actionEnsure ::
+>    state Concrete -> state Concrete -> input Concrete -> output -> IO Result
+
+
+We'll also need access to our environment, and the state Concrete. So we're
+going to use a StateT monad transformer over IO to obtain and update these states.
+
+-}
+executeAction :: Action state -> StateT (state Concrete, Environment) IO Result
+executeAction (Action input output execute update ensure) = do
+  (state, env) <- get
+
+  let
+    input' =
+      hmap (reify env) input
+
+  output' <- lift $ execute input'
+
+  let
+    newEnv =
+      updateEnvironment env output output'
+
+    newState =
+      update state input' (Var (Concrete output'))
+
+  put (newState, newEnv)
+  lift (ensure state newState input' output')
+
+
+{-
+
+Execute all the actions given an initial state.
+
+This will be out final property, so it's one of these
+
+> Property = Property { runProperty :: Gen IO Result }
+
+The idea is to run each action in turn, stopping if we
+encounter a test failure.
+
+-}
+executeActions :: state Concrete -> [Action state] -> Property
 executeActions initialState actions =
   Property $ do
-    Gen $ \seed -> do
-      (res, _) <-
-        flip runStateT (initialState, Map.empty) $
-          goActions seed Success actions
-      return res
+    Gen $ \_ -> do
+      evalStateT
+        (goActions Success actions)
+        (initialState, Map.empty)
 
   where
-    goActions _    result@(Failure {}) _ = return result
-    goActions _    result [] = return result
-    goActions seed Success (a : as) = do
-      let
-        (seed0, seed1) = Random.split seed
-      result <- runGen (executeAction a) seed
-      goActions seed1 result as
+    goActions Success (a : as) = do
+      result <- executeAction a
+      goActions result as
+
+    goActions result _ = return result

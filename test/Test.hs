@@ -13,5 +13,5 @@ main :: IO ()
 main =
   defaultMain [
     Test.CircularBuffer.Report.tests
-  -- , Test.CircularBuffer.Hedgehog.tests
+  , Test.CircularBuffer.Hedgehog.tests
   ]

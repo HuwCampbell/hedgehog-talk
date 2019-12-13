@@ -70,3 +70,6 @@ test-suite test
 
   hs-source-dirs:
     test
+
+  other-modules:         Test.CircularBuffer.Hedgehog
+                         Test.CircularBuffer.Report
