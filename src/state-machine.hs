@@ -1,0 +1,420 @@
+{-# Language KindSignatures #-}
+{-# Language RankNTypes #-}
+{-# Language GADTs #-}
+
+module StateMachine where
+
+import Report
+import Rose
+
+import Control.Monad (foldM)
+import Control.Monad.Trans.State
+import Control.Monad.IO.Class
+
+import Data.Functor.Const
+import Data.Functor.Identity
+import Data.Map (Map)
+import qualified Data.Map as Map
+
+import Unsafe.Coerce (unsafeCoerce)
+
+import GHC.Types (Any)
+
+{-
+
+State machine testing is the generation of test programs,
+including function inputs, outputs, and assertions...
+
+Last week we saw a circular buffer example, and we were
+modelling the creation of a buffer, adding items to it,
+retrieving items from it, and ensuring that those items
+were what we were expecting.
+
+por exemplo:
+
+
+> test :: TestT IO ()
+> test = do
+>   buf <- create 3
+>
+>   put buf 5
+>
+>   put buf 10
+>
+>   put buf 20
+>
+>   retrieved <- get buf
+>   retrieved === Just 5
+
+
+Which is quite different to:
+
+
+> test :: TestT IO ()
+> test = do
+>   buf <- create 2
+>
+>   put buf 5
+>
+>   put buf 10
+>
+>   put buf 20
+>
+>   retrieved <- get buf
+>   retrieved === Just 10
+
+
+Obviously, in order to generate the correct assertion
+at the end, we need to be keeping track of what we think
+the should be holding; in other words, we need to model
+the state of the program.
+
+
+This sounds difficult, looking at the last action,
+which includes a test:
+
+
+To generate this step, we need to know:
+
+    - If a buffer will exists;
+    - The "name" of the variable of a buffer;
+    - What's been placed into this particular buffer
+      (which doesn't exist yet);
+    - How to access the intermediate output from the
+      get command itself.
+
+
+To run this step, we need to know:
+
+    - How to find the real buffer which we have called
+      by name;
+    - The true results from our get to compare in our
+      assertion.
+
+
+So we're going to need a way to wrap over not the actual
+values of a type, but rather the way that they are held.
+
+
+
+Introducing: the HFunctor
+
+-}
+
+
+class HFunctor g where
+  hmap :: (forall a. m a -> n a) -> g m -> g n
+
+{-
+
+As opposed to the more standard Functor and MFunctor
+
+-}
+
+
+class Functor f where
+  map :: (a -> b) -> f a -> f b
+
+class MFunctor g where
+  hoist :: (forall a. m a -> n a) -> g m a -> g n a
+
+
+{-
+
+Which operate on standard Functor and Monad Transformers
+respectively.
+
+An example of the HFunctor, via Higher kinded data types.
+
+-}
+
+
+data HKPerson h =
+  HKPerson {
+    name :: h String
+  , age  :: h Int
+  }
+
+
+type KnownPerson       = HKPerson Identity
+type UnknownPerson     = HKPerson Maybe
+type ExplainedPerson a = HKPerson (Either a)
+
+
+instance HFunctor HKPerson where
+  hmap f (HKPerson n a) = HKPerson (f n) (f a)
+
+
+toUnknown :: HFunctor h => h Identity -> h Maybe
+toUnknown = hmap (Just . runIdentity)
+
+
+forget :: HFunctor h => h (Either a) -> h Maybe
+forget = hmap eToM
+  where
+    eToM (Right a) = Just a
+    eToM (Left _) = Nothing
+
+
+{-
+
+But some things are harder to move between, I can
+go from an KnownPerson to an Unknown person safely
+by putting everything in a Just (or just const Nothing),
+but I can't move from an HKPerson Maybe to a HKPerson Identity
+unless all the fields are actually present.
+
+-}
+
+
+class HFunctorMaybe g where
+  hmapMaybe :: (forall a. m a -> Maybe (n a)) -> g m -> Maybe (g n)
+
+
+class HTraversable g where
+  htraverse :: forall m n e. Applicative e => (forall a. m a -> e (n a)) -> g m -> e (g n)
+
+
+instance HTraversable HKPerson where
+  htraverse f (HKPerson n a)=
+    HKPerson
+      <$> f n
+      <*> f a
+
+
+toKnown :: HTraversable h => h Maybe -> Maybe (h Identity)
+toKnown = htraverse (fmap Identity)
+
+
+
+--
+-- A free higher kinded Functor.
+data Var a h = Var (h a)
+
+
+instance HFunctor (Var a) where
+  hmap f (Var x) = Var (f x)
+
+
+instance HTraversable (Var a) where
+  htraverse f (Var x) = Var <$> f x
+
+
+{-
+
+So here's the plan:
+
+In generation phase, every bind will be replace with
+a unique name, which will be an incrementing integer.
+
+> test :: TestT IO ()
+> test = do
+>   buf <- create 3
+>
+>   put buf 5
+>
+>   put buf 10
+>
+>   put buf 20
+>
+>   retrieved <- get buf
+>   retrieved === Just 5
+
+during generation becomes
+
+> test :: TestT IO ()
+> test = do
+>   Var 1 = create 3
+>
+>   Var 2 = put (Var 1) 5
+>
+>   Var 3 = put (Var 1) 10
+>
+>   Var 4 = put (Var 1) 20
+>
+>   Var 5 = get (Var 1)
+>   Var 5 === Just 5
+
+And at execution time, we substitute out the
+integer representations for actual values.
+
+-}
+
+type Name = Int
+
+-- | data Const a b = Const a
+data Symbolic a = Symbolic Name
+
+-- | data Identity a = Identity a
+newtype Concrete a = Concrete a
+
+
+data Command m state =
+  forall input output. (HFunctor input) =>
+  Command {
+    -- | A generator which provides random arguments for a command. If the
+    --   command cannot be executed in the current state, it should return
+    --   'Nothing'.
+      commandGen ::
+        state Symbolic -> Maybe (Gen (input Symbolic))
+
+    -- | Executes a command using the arguments generated by 'commandGen'.
+    , commandExecute ::
+        input Concrete -> m output
+
+    -- | Update the state during generation or execution.
+    , commandUpdate ::
+        forall v. state v -> input v -> Var output v -> state v
+
+    -- | What conditions must hold once the command has executed for real.
+    , commandEnsure ::
+        state Concrete -> state Concrete -> input Concrete -> output -> Property
+
+    }
+
+
+data Command' m state =
+  forall input output. (HFunctor input) =>
+  Command' {
+    -- | A generator which provides random arguments for a command.
+      command'Gen ::
+        Gen (input Symbolic)
+
+    -- | Executes a command using the arguments generated by 'commandGen'.
+    , command'Execute ::
+        input Concrete -> m output
+
+    -- | Update the state during generation or execution.
+    , command'Update ::
+        forall v. state v -> input v -> Var output v -> state v
+
+    -- | What conditions must hold once the command has executed for real.
+    , command'Ensure ::
+        state Concrete -> state Concrete -> input Concrete -> output -> Property
+
+    }
+
+-- | An instantiation of a 'Command' which can be executed, and its effect
+--   evaluated.
+--
+data Action m state =
+  forall input output. (HFunctor input) =>
+  Action {
+      actionInput ::
+        input Symbolic
+
+    , actionOutput ::
+        Symbolic output
+
+    , actionExecute ::
+        input Concrete -> m output
+
+    , actionUpdate ::
+        forall v. state v -> input v -> Var output v -> state v
+
+    , actionEnsure ::
+        state Concrete -> state Concrete -> input Concrete -> output -> Property
+    }
+
+
+-- | Generate a single action from a list of commands
+generateAction :: Name -> state Symbolic -> [Command m state] -> Gen (Action m state)
+generateAction name state commands = do
+  let
+    applicable =
+      [ Command' gen execute update ensure
+      | Command cGen execute update ensure <- commands
+      , Just gen <- [cGen state]
+      ]
+
+  Command' gen execute update ensure
+    <- element applicable
+
+  input
+    <- gen
+
+  return $
+    Action input (Symbolic name) execute update ensure
+
+
+-- | Generate a random length set of actions
+--
+--   This does not shrink
+generateActions :: state Symbolic -> [Command m state] -> Gen [Action m state]
+generateActions initialState commands = do
+  number       <- integral 1 10
+  (actions, _) <- foldM go ([], initialState) [1 .. number]
+  return (reverse actions)
+
+  where
+    go (rest, state) name = do
+      action@(Action input output _ update _) <- generateAction name state commands
+      let
+        newState =
+          update state input (Var output)
+
+      return $
+        (action : rest, newState)
+
+
+
+type Environment = Map Name Any
+
+
+reify :: Environment -> Symbolic a -> Concrete a
+reify env (Symbolic n) =
+  unsafeCoerce $
+    env Map.! n
+
+
+updateEnvironment :: Environment -> Symbolic a -> a -> Environment
+updateEnvironment env (Symbolic n) concrete =
+  Map.insert n (unsafeCoerce concrete) env
+
+
+-- | Execute an action
+executeAction :: Action IO state -> Gen (StateT (state Concrete, Environment) IO Result)
+executeAction (Action input output execute update ensure) =
+  Gen $ \seed -> do
+    (state, env) <- get
+
+    let
+      input' =
+        hmap (reify env) input
+
+    output' <- liftIO (execute input')
+
+    let
+      newEnv =
+        updateEnvironment env output output'
+
+      newState =
+        update state input' (Var (Concrete output'))
+
+    put (newState, newEnv)
+
+    liftIO $ runGen (runProperty (ensure state newState input' output')) seed
+
+
+-- Execute all the actions...
+executeActions :: state Concrete -> [Action IO state] -> Property
+executeActions initialState actions =
+  Property $ do
+    results <-
+      Gen $ \seed -> do
+        (rs, _) <-
+          flip runStateT (initialState, Map.empty) $
+            traverse (runAction seed) actions
+        return rs
+
+    return $ fmap findError results
+
+  where
+    runAction seed a = runGen (executeAction a) seed
+
+    findError results =
+      foldr go Success results
+
+    go Success Success = Success
+    go Success err     = err
+    go err _           = err
