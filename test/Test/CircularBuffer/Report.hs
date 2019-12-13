@@ -107,6 +107,7 @@ put =
 data Get (v :: * -> *) =
   Get (Var CircularBuffer v)
 
+
 deriving instance Show (v CircularBuffer) => Show (Get v)
 
 
