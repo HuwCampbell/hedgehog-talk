@@ -5,23 +5,21 @@
 
 module StateMachine where
 
-import Report
-import Rose
+import           Report
 
-import Control.Monad (foldM)
-import Control.Monad.Trans.Class
-import Control.Monad.Trans.State
+import           Control.Monad (foldM)
+import           Control.Monad.Trans.Class
+import           Control.Monad.Trans.State
 
-import Data.Functor.Const
-import Data.Functor.Identity
-import Data.Map (Map)
+import           Data.Functor.Const
+import           Data.Functor.Identity
+import           Data.Map (Map)
 import qualified Data.Map as Map
 
 import qualified System.Random as Random
 
-import Unsafe.Coerce (unsafeCoerce)
-
-import GHC.Types (Any)
+import           Unsafe.Coerce (unsafeCoerce)
+import           GHC.Types (Any)
 
 {-
 
@@ -35,15 +33,16 @@ which we only really got a small peek at.
 So if I were to try and contrast the difference between
 normally property based testing, it would be this:
 
-> Property based testing is the random generation of inputs
-  to functions under test;
+> Usual property based testing is the random generation
+  of inputs to functions under test;
 
-> State machine testing is the random generation of programs
-  to test.
+> State machine testing is the random generation of
+  programs with sensible assertions to test.
 
 
 So state machine testing is the generation of test programs,
-including function inputs, outputs, and assertions...
+including function inputs, outputs, and all of the assertions
+you would want to make as you were running it.
 
 
 Last week we saw a circular buffer example, and we were
@@ -52,8 +51,8 @@ retrieving items from it, and ensuring that those items
 were what we were expecting.
 
 
-If one was testing this by hand, they might do something
-like this:
+If one was a java developer, they would almost certainly
+test this by hand, and they might do something like this:
 
 
 > test :: TestT IO ()
@@ -96,7 +95,7 @@ more rigorously.
 
 
 This sounds difficult, just looking at the last action,
-which includes a test:
+which includes a get action and a test assertion:
 
 
 To generate this step, we need to know:
@@ -322,7 +321,8 @@ concrete (Var (Concrete a)) = a
 
 {-
 
-Our main Command type, which we will parameterise by the user's defined state type.
+Our main Command type, which we will parameterise by the user's defined state type,
+which needs to be one of these higher kinded data types.
 
 The input and output are existentially quantified, so they don't appear in the
 parameterised types of Command, and we can use any types with the Command itself.
@@ -357,7 +357,8 @@ data Command state =
 
 -- | Type mirroring Command but with concrete generator.
 --
---   Only used during Action generation.
+--   Only used during Action generation, and only required
+--   due to existentially quantified types.
 data Intermediate state =
   forall input output. (HFunctor input, Show (input Symbolic)) =>
   Intermediate {
@@ -421,8 +422,8 @@ generateAction name state commands = do
   let
     applicable =
       [ Intermediate gen execute update ensure
-      | Command cGen execute update ensure <- commands
-      , Just gen <- [cGen state]
+      | Command xGen execute update ensure <- commands
+      , Just gen <- [xGen state]
       ]
 
   Intermediate gen execute update ensure
@@ -474,7 +475,15 @@ But where can we draw the concrete values from?
 
 -}
 
-type Environment = Map Name Any
+newtype Environment = Environment {
+  openEnvironment :: Map Name Any
+}
+
+
+newEnvironment :: Environment
+newEnvironment =
+  Environment Map.empty
+
 
 {-
 
@@ -490,7 +499,7 @@ the appropriate type.
 
 
 reify :: Environment -> Symbolic a -> Concrete a
-reify env (Symbolic n) =
+reify (Environment env) (Symbolic n) =
   unsafeCoerce $
     env Map.! n
 
@@ -502,14 +511,15 @@ We need a function to add more items into the environment.
 -}
 
 updateEnvironment :: Environment -> Symbolic a -> a -> Environment
-updateEnvironment env (Symbolic n) concrete =
-  Map.insert n (unsafeCoerce concrete) env
+updateEnvironment (Environment env) (Symbolic n) concrete =
+  Environment $
+    Map.insert n (unsafeCoerce concrete) env
 
 {-
 
 You might notice that I've put in 'a' while drawing out 'Concrete a';
 fortunately as I've made sure Concrete is a newtype their runtime
-representations are the same and this will work.
+representations are the same.
 
 -}
 
@@ -517,9 +527,7 @@ representations are the same and this will work.
 
 {-
 
-Execute a single action
-
-We're going to be ensuring a result due to the
+Execute a single action and run its tests
 
 
 >  actionEnsure ::
@@ -528,6 +536,7 @@ We're going to be ensuring a result due to the
 
 We'll also need access to our environment, and the state Concrete. So we're
 going to use a StateT monad transformer over IO to obtain and update these states.
+
 
 -}
 executeAction :: Action state -> StateT (state Concrete, Environment) IO Result
@@ -569,7 +578,7 @@ executeActions initialState actions =
     Gen $ \_ -> do
       evalStateT
         (goActions Success actions)
-        (initialState, Map.empty)
+        (initialState, newEnvironment)
 
   where
     goActions Success (a : as) = do

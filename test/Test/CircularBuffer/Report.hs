@@ -73,6 +73,7 @@ data Put (v :: * -> *) =
 
 deriving instance Show (v CircularBuffer) => Show (Put v)
 
+
 instance HFunctor Put where
   hmap f (Put buf val) =
     Put (hmap f buf) val
