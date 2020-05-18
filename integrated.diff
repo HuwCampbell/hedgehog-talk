@@ -1,0 +1,101 @@
+1c1,2
+< module Shrinking where
+---
+> module Integrated where
+>
+4c5,7
+< import qualified System.Random as Random
+---
+> import System.Random as Random
+> import Data.Traversable
+> import qualified Shrinking as QC
+10c13
+<     runGen :: Random.StdGen -> a
+---
+>     runGen :: Random.StdGen -> Rose a
+12a16
+>
+14c18
+<   fmap f (Gen g) =
+---
+>   f `fmap` (Gen g) =
+16c20,21
+<       f (g seed)
+---
+>       fmap f (g seed)
+>
+20c25
+<     Gen . const
+---
+>     Gen . const . pure
+23a29
+>
+27,34c33,37
+<     Gen $ \seed ->
+<       let (seed0, seed1) = Random.split seed
+<        in runGen (f (runGen x seed0)) seed1
+<
+<
+< class Arbitrary a where
+<   arbitrary :: Gen a
+<   shrink :: a -> [a]
+---
+>     Gen $ \seed -> do
+>       let
+>         (seed0, seed1) = Random.split seed
+>       node  <- runGen x seed0
+>       runGen (f node) seed1
+37,41c40,43
+< instance Arbitrary Bool where
+<   arbitrary =
+<     Gen (fst . Random.random)
+<   shrink b =
+<     if b then [False] else []
+---
+> arbitrary :: QC.Arbitrary a => Gen a
+> arbitrary = Gen $ \s ->
+>   let a = QC.runGen (QC.arbitrary) s
+>    in unfold QC.shrink a
+62c64
+<     runProperty :: Gen (Rose (IO Result))
+---
+>     runProperty :: Gen (IO Result)
+64a67
+>
+67c70,71
+<   Property $ fmap (fmap (fmap f)) $ runProperty prop
+---
+>   Property $ fmap (fmap f) $ runProperty prop
+>
+71a76
+>
+77c82
+<       Property . pure . pure $ pure result
+---
+>       Property . pure $ pure result
+79,80d83
+< instance (Arbitrary a, Show a, Testable prop) => Testable (a -> prop) where
+<   property f = forAllShrink arbitrary shrink f
+87,91c90
+< forAll gen prop = forAllShrink gen (const []) prop
+<
+<
+< forAllShrink :: (Show a, Testable prop) => Gen a -> (a -> [a]) -> (a -> prop) -> Property
+< forAllShrink gen shr prop =
+---
+> forAll gen prop =
+95,105c94,95
+<       shrinking shr a $ \a' ->
+<         mapResult (addInput (show a')) $
+<           property (prop a')
+<
+<
+< shrinking :: (a -> [a]) -> a -> (a -> Property) -> Property
+< shrinking shrink x pf =
+<   Property $
+<     fmap join $
+<       traverse (runProperty . pf) $
+<         unfold shrink x
+---
+>       mapResult (addInput (show a)) $
+>         (property (prop a))

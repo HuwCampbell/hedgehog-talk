@@ -1,0 +1,79 @@
+1c1
+< module Report where
+---
+> module Shrinking where
+5a6
+> import Rose
+29a31
+>
+31a34,35
+>   shrink :: a -> [a]
+>
+35a40,42
+>   shrink b =
+>     if b then [False] else []
+>
+55c62
+<     runProperty :: Gen Result
+---
+>     runProperty :: Gen (Rose (IO Result))
+60c67
+<   Property $ fmap f $ runProperty prop
+---
+>   Property $ fmap (fmap (fmap f)) $ runProperty prop
+70c77
+<       Property . pure $ result
+---
+>       Property . pure . pure $ pure result
+73,74c80,83
+<   property f =
+<     forAll arbitrary f
+---
+>   property f = forAllShrink arbitrary shrink f
+>
+> instance Testable Property where
+>   property = id
+78c87,91
+< forAll gen f =
+---
+> forAll gen prop = forAllShrink gen (const []) prop
+>
+>
+> forAllShrink :: (Show a, Testable prop) => Gen a -> (a -> [a]) -> (a -> prop) -> Property
+> forAllShrink gen shr prop =
+82,83c95,105
+<       mapResult (addInput (show a)) $
+<         property (f a)
+---
+>       shrinking shr a $ \a' ->
+>         mapResult (addInput (show a')) $
+>           property (prop a')
+>
+>
+> shrinking :: (a -> [a]) -> a -> (a -> Property) -> Property
+> shrinking shrink x pf =
+>   Property $
+>     fmap join $
+>       traverse (runProperty . pf) $
+>         unfold shrink x
+97,98c119,121
+<         result = runGen (runProperty (property prop)) seed0
+<       if Success == result then go (i - 1) seed1 else return result
+---
+>         rose = runGen (runProperty (property prop)) seed0
+>       result <- node rose
+>       if Success == result then go (i - 1) seed1 else findSmallest seed0 result (leaves rose)
+101a125,137
+>
+>
+> findSmallest :: Random.StdGen -> Result -> [Rose (IO Result)] -> IO Result
+> findSmallest seed sofar potentials =
+>   case potentials of
+>     [] ->
+>       pure sofar
+>     (rose : roses) -> do
+>       result <- node rose
+>       if Success == result then
+>         findSmallest seed sofar roses
+>       else
+>         findSmallest seed result (leaves rose)

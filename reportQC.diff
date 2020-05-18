@@ -1,0 +1,70 @@
+1c1
+< module Report where
+---
+> module Tiny where
+37,52d36
+< data Result
+<   = Success
+<   | Failure String [String]
+<   deriving (Eq, Show)
+<
+<
+< failWith :: String -> Result
+< failWith r = Failure r []
+<
+<
+< addInput :: String -> Result -> Result
+< addInput input (Failure r inputs) =
+<   Failure r (input : inputs)
+< addInput input Success = Success
+<
+<
+55c39
+<     runProperty :: Gen Result
+---
+>     runProperty :: Gen Bool
+58,61d41
+< mapResult :: (Result -> Result) -> Property -> Property
+< mapResult f prop =
+<   Property $ fmap f $ runProperty prop
+<
+66,70c46
+<   property b =
+<     let
+<       result = if b then Success else failWith "falsifiable"
+<     in
+<       Property . pure $ result
+---
+>   property = Property . pure
+72c48
+< instance (Arbitrary a, Show a, Testable prop) => Testable (a -> prop) where
+---
+> instance (Arbitrary a, Testable prop) => Testable (a -> prop) where
+76,77c52
+<
+< forAll :: (Show a, Testable prop) => Gen a -> (a -> prop) -> Property
+---
+> forAll :: Testable prop => Gen a -> (a -> prop) -> Property
+79,84c54,56
+<   Property $ do
+<     a <- gen
+<     runProperty $
+<       mapResult (addInput (show a)) $
+<         property (f a)
+<
+---
+>   Property $
+>     gen >>=
+>       runProperty . property . f
+86c58
+< check :: Testable prop => prop -> IO Result
+---
+> check :: Testable prop => prop -> IO Bool
+90c62
+<       return Success
+---
+>       return True
+98c70
+<       if Success == result then go (i - 1) seed1 else return result
+---
+>       if result then go (i - 1) seed1 else return result
