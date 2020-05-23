@@ -1,70 +1,110 @@
 1c1
-< module Report where
+< module Tiny where
 ---
-> module Tiny where
-37,52d36
-< data Result
-<   = Success
-<   | Failure String [String]
-<   deriving (Eq, Show)
+> module Report where
+3a4
+> import Data.Foldable (traverse_)
+6d6
 <
-<
-< failWith :: String -> Result
-< failWith r = Failure r []
-<
-<
-< addInput :: String -> Result -> Result
-< addInput input (Failure r inputs) =
-<   Failure r (input : inputs)
-< addInput input Success = Success
-<
-<
-55c39
-<     runProperty :: Gen Result
+36a37,77
+>
+> integral :: (Random.Random i, Integral i) => i -> i -> Gen i
+> integral lower upper =
+>   Gen $ \seed ->
+>     fst $
+>       Random.randomR (lower, upper) seed
+>
+>
+> element :: [a] -> Gen a
+> element as = case as of
+>   [] ->
+>     error "Gen.element: used with empty list"
+>   _ -> do
+>     n <- integral 0 (length as - 1)
+>     pure $ as !! n
+>
+>
+> data Result
+>   = Success
+>   | Failure String [String]
+>   deriving (Eq, Show)
+>
+>
+> failWith :: String -> Result
+> failWith r = Failure r []
+>
+> printResult :: Result -> IO ()
+> printResult Success = putStrLn "Success"
+> printResult (Failure r xx) = do
+>   putStrLn "Failure"
+>   putStrLn ("  " ++ r)
+>   putStrLn "inputs"
+>   traverse_ putStrLn xx
+>
+>
+> addInput :: String -> Result -> Result
+> addInput input (Failure r inputs) =
+>   Failure r (input : inputs)
+> addInput input Success = Success
+>
+>
+39c80
+<     runProperty :: Gen Bool
 ---
->     runProperty :: Gen Bool
-58,61d41
-< mapResult :: (Result -> Result) -> Property -> Property
-< mapResult f prop =
-<   Property $ fmap f $ runProperty prop
-<
-66,70c46
-<   property b =
-<     let
-<       result = if b then Success else failWith "falsifiable"
-<     in
-<       Property . pure $ result
----
->   property = Property . pure
-72c48
-< instance (Arbitrary a, Show a, Testable prop) => Testable (a -> prop) where
----
-> instance (Arbitrary a, Testable prop) => Testable (a -> prop) where
-76,77c52
-<
-< forAll :: (Show a, Testable prop) => Gen a -> (a -> prop) -> Property
----
-> forAll :: Testable prop => Gen a -> (a -> prop) -> Property
-79,84c54,56
-<   Property $ do
-<     a <- gen
-<     runProperty $
-<       mapResult (addInput (show a)) $
-<         property (f a)
-<
----
+>     runProperty :: Gen (IO Result)
+41a83,92
+> success :: Property
+> success =
 >   Property $
->     gen >>=
->       runProperty . property . f
-86c58
-< check :: Testable prop => prop -> IO Result
+>     pure . pure $
+>       Success
+>
+> mapResult :: (Result -> Result) -> Property -> Property
+> mapResult f prop =
+>   Property $ fmap (fmap f) $ runProperty prop
+>
+46c97,104
+<   property = Property . pure
 ---
-> check :: Testable prop => prop -> IO Bool
-90c62
-<       return Success
+>   property b =
+>     let
+>       result = if b then Success else failWith "falsifiable"
+>     in
+>       Property . pure . pure $ result
+>
+> instance Testable Property where
+>   property = id
+48c106
+< instance (Arbitrary a, Testable prop) => Testable (a -> prop) where
 ---
->       return True
-98c70
-<       if Success == result then go (i - 1) seed1 else return result
+> instance (Arbitrary a, Show a, Testable prop) => Testable (a -> prop) where
+52c110,111
+< forAll :: Testable prop => Gen a -> (a -> prop) -> Property
 ---
->       if result then go (i - 1) seed1 else return result
+>
+> forAll :: (Show a, Testable prop) => Gen a -> (a -> prop) -> Property
+54,56c113,118
+<   Property $
+<     gen >>=
+<       runProperty . property . f
+---
+>   Property $ do
+>     a <- gen
+>     runProperty $
+>       mapResult (addInput (show a)) $
+>         property (f a)
+>
+58c120
+< check :: Testable prop => prop -> IO Bool
+---
+> check :: Testable prop => prop -> IO Result
+62c124
+<       return True
+---
+>       return Success
+69,70c131,132
+<         result = runGen (runProperty (property prop)) seed0
+<       if result then go (i - 1) seed1 else return result
+---
+>       result <- runGen (runProperty (property prop)) seed0
+>       if Success == result then go (i - 1) seed1 else return result

@@ -11,7 +11,7 @@ import           Control.Monad.IO.Class
 import           Foreign.C.Types (CSize, CUChar)
 
 import           StateMachine
-import           Report
+import           ReportTeeny
 
 import           CircularBuffer (CircularBuffer)
 import qualified CircularBuffer as Circular

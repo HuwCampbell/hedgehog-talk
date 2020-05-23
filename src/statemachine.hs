@@ -5,7 +5,7 @@
 
 module StateMachine where
 
-import           Report
+import           ReportTeeny
 
 import           Control.Monad (foldM)
 import           Control.Monad.Trans.Class
